@@ -1,4 +1,4 @@
-# 🎓 EASA DeskBot – AI College Helpdesk (V2.2 Production Architecture)
+# 🎓 EASA DeskBot – AI College Helpdesk (V2.3 Production Architecture)
 
 > **Official AI Information Assistant & Digital Reception Desk**  
 > **EASA College of Engineering and Technology (Autonomous)**  
@@ -12,16 +12,22 @@
 
 **EASA DeskBot** is an enterprise-grade, **Strict Source-Grounded RAG Helpdesk** engineered to serve prospective students, parents, current scholars, and visitors with verified institutional knowledge.
 
-### Core Design Principles:
-* **No Retrieved Evidence → No Factual Answer → Controlled Fallback**  
-  The system strictly enforces **abstention on unsupported facts**, refusing to invent admission fees, cutoffs, bus routes, or internal phone numbers.
-* **Conversational Multi-Turn Context**: An integrated Contextual Query Rewriter resolves conversational pronouns and follow-up questions (*"What about ECE?"*, *"Does it have a boys hostel?"*) into self-contained search queries before retrieval.
-* **ACID Persistent Operations**: Notices, user feedback, and unanswered queries are permanently persisted via SQLite/Supabase, guaranteeing zero data loss across container restarts.
-* **Admin RBAC Authentication**: All administrative and notice-publishing endpoints are secured with `X-Admin-API-Key` / Bearer token authentication.
-* **True Sequential Document Versioning**: Maintains incremental version history (`v1 → v2 → v3`) per canonical URL via SHA-256 content hashing.
+### Core Engineering Principles:
+* **Strict Abstention on Unsupported Facts**: No retrieved evidence → No factual answer → Controlled fallback. The system strictly refuses to invent admission fees, cutoffs, bus routes, or internal phone numbers.
+* **Storage Authority & Canonical Hierarchy**:
+  * **Production**: Supabase PostgreSQL + pgvector is the canonical source of truth for documents, versions, notices, feedback, and unanswered queries.
+  * **Local / Container Fallback**: Embedded SQLite (`deskbot.db`) and local disk cache ensure zero external dependencies are required for local testing or cold starts.
+* **Conversational Multi-Turn Context**: An entity-aware Contextual Query Rewriter resolves pronouns and follow-up questions (*"What about ECE?"*, *"What about that course?"*, *"Does it have a boys hostel?"*) into self-contained search queries before retrieval.
+* **ACID Persistent Operations**: Notices, user feedback, and unanswered queries are permanently persisted, guaranteeing zero data loss across container restarts.
+* **Admin RBAC Authentication**: All administrative and notice-publishing endpoints are secured with `X-Admin-API-Key` or Bearer token authentication.
+* **True Sequential Document Versioning**: Tracks incremental version history (`v1 → v2 → v3 → v4`) per canonical URL via SHA-256 content hashing.
 * **Native Multilingual Embeddings**: Powered by `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions) supporting **English**, **Tamil (தமிழ்)**, and **Tanglish**, perfectly synchronized with Supabase `vector(384)`.
-* **Stable Chunk Identifiers**: RRF fusion utilizes deterministic `chunk_id` (`document_id + version + chunk_index`) to eliminate chunk collisions.
-* **Single-Container Cloud Delivery**: FastAPI backend directly serves the high-performance Digital Reception Desk UI with sub-second cold starts from persistent vector caches.
+* **Production Observability & Resilience**:
+  * Liveness Probe: `GET /health`
+  * Readiness Probe: `GET /ready` (validates active vector chunks and database status)
+  * Rate Limiting: 60 requests/minute per client IP
+  * Payload Size Limits: 100KB request entity guard
+  * LLM Resiliency: 25-second read timeouts with automatic retry
 
 ---
 
@@ -46,15 +52,15 @@
                  [ Multilingual Embeddings (384-dim EN/TA) ]
                                        ↓
                      ┌─────────────────┴─────────────────┐
-                     │     PERSISTENT STORAGE LAYER      │
-                     │  Supabase pgvector / SQLite Cache │
-                     │  (Notices, Feedback, Unanswered)  │
+                     │     CANONICAL STORAGE LAYER       │
+                     │  Supabase pgvector (Production)   │
+                     │  Embedded SQLite (Local Fallback) │
                      └─────────────────┬─────────────────┘
                                        │
-     User Query ───→ [ Security Guardrails & Delimiter Filter ]
+     User Query ───→ [ Rate Limiting & Delimiter Filter ]
                                        │
-                    [ Conversational Query Rewriter ]
-                    (Resolves multi-turn chat history)
+                 [ Entity-Aware Conversational Query Rewriter ]
+                 (Resolves anaphora & multi-turn history)
                                        │
                  ┌─────────────────────┴─────────────────────┐
                  ↓                                           ↓
@@ -77,8 +83,9 @@
                     ↓                                     ↓
          [ Controlled Fallback ]                 [ Pluggable LLM Layer ]
      (Dynamic contacts from DB:                 (Google GenAI Gemini 2.5 /
-      hotline +91 97888 88888;                   OpenAI / Ollama)
-      logged to unanswered DB)                            │
+      hotline +91 97888 88888;                   OpenAI / Ollama;
+      logged to unanswered DB)                   25s timeout with retries)
+                                                          │
                                                           ↓
                                                 [ Output Validator ]
                                               (Zero prompt/data leak)
@@ -97,7 +104,7 @@
 desk-bot-project/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py                  # FastAPI entry point & fast-boot loader
+│   │   ├── main.py                  # FastAPI entry point, /ready probe & rate limiter
 │   │   ├── api/
 │   │   │   ├── chat.py              # POST /api/chat (Multi-turn conversational RAG)
 │   │   │   ├── notices.py           # GET, POST /api/notices (Persistent & RBAC protected)
@@ -108,7 +115,7 @@ desk-bot-project/
 │   │   │   ├── logging.py           # Structured logger
 │   │   │   └── security.py          # Multi-layer injection, output & RBAC validators
 │   │   ├── db/
-│   │   │   └── storage.py           # Unified persistent database adapter (SQLite + Supabase)
+│   │   │   └── storage.py           # Canonical storage adapter (Supabase / SQLite)
 │   │   ├── rag/
 │   │   │   ├── embeddings.py        # 384-dim multilingual vectorizer (EN & TA)
 │   │   │   ├── vector_search.py     # Supabase pgvector & local vector search
@@ -120,7 +127,7 @@ desk-bot-project/
 │   │   │   └── pipeline.py          # Strict Grounded RAG orchestrator
 │   │   ├── llm/
 │   │   │   ├── base.py              # Abstract LLMProvider interface
-│   │   │   ├── gemini.py            # Google GenAI SDK (gemini-2.5-flash)
+│   │   │   ├── gemini.py            # Google GenAI SDK with timeouts & retries
 │   │   │   ├── openai.py            # OpenAI API provider
 │   │   │   └── ollama.py            # Local Ollama provider
 │   │   ├── ingestion/
@@ -143,7 +150,7 @@ desk-bot-project/
 │   │   ├── test_hallucination.py    # Controlled fallback tests
 │   │   ├── test_temporal.py         # 2026-27 vs legacy precedence
 │   │   ├── test_security.py         # Injection & private records refusal
-│   │   └── evaluate_rag.py          # Factual accuracy & multilingual benchmark
+│   │   └── evaluate_rag.py          # Multi-factor factual accuracy & abstention benchmark
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── frontend/
@@ -164,7 +171,7 @@ desk-bot-project/
 
 ---
 
-## ⚡ Quickstart & Testing
+## ⚡ Quickstart & Verification
 
 ### 1. Local Python Setup
 ```bash
@@ -174,16 +181,18 @@ cd "d:/desk bot project"
 # Install dependencies
 pip install -r backend/requirements.txt
 
-# Run the unit test suite
+# Run unit tests
 python run_tests.py
 
-# Run the multilingual benchmark evaluation suite (Factual accuracy & abstention)
+# Run factual & multilingual benchmark evaluation
 python backend/tests/evaluate_rag.py
 
 # Start backend server (serves frontend automatically)
 python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
-Open **`http://localhost:8000`** in your browser to experience the Digital Reception Desk.
+* **Reception Desk Portal**: `http://localhost:8000`
+* **Liveness Probe**: `http://localhost:8000/health`
+* **Readiness Probe**: `http://localhost:8000/ready`
 
 ---
 

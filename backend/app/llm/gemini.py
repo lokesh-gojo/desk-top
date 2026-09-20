@@ -1,5 +1,6 @@
 import os
 import httpx
+import asyncio
 from backend.app.llm.base import LLMProvider
 from backend.app.core.logging import logger
 from backend.app.core.config import settings
@@ -7,14 +8,14 @@ from backend.app.core.config import settings
 class GeminiProvider(LLMProvider):
     """
     Gemini LLM Provider implementing Google's modern Generative AI client.
-    Supports official google-genai SDK with resilient REST API fallback.
+    Configured with resilient connect/read timeouts and automatic retries.
     """
     def __init__(self, api_key: str = None, model: str = None):
         self.api_key = api_key or settings.GEMINI_API_KEY
         self.model = model or settings.GEMINI_MODEL
         self.client = None
+        self.timeout = httpx.Timeout(connect=5.0, read=25.0, write=10.0, pool=10.0)
         
-        # Try initializing google.genai Client if installed and key present
         if self.api_key:
             try:
                 from google import genai
@@ -27,58 +28,55 @@ class GeminiProvider(LLMProvider):
 
     async def generate(self, prompt: str, system_instruction: str = "") -> str:
         if not self.api_key:
-            logger.warning("GEMINI_API_KEY is not configured. Returning rule-based grounded context summary.")
             return self._extract_grounded_fallback(prompt)
 
         # 1. Use official SDK if available
         if self.client:
-            try:
-                import asyncio
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self.client.models.generate_content(
-                        model=self.model,
-                        contents=prompt,
+            for attempt in range(2):
+                try:
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: self.client.models.generate_content(
+                            model=self.model,
+                            contents=prompt,
+                        )
                     )
-                )
-                if response and hasattr(response, "text") and response.text:
-                    return response.text.strip()
-            except Exception as e:
-                logger.warning(f"google-genai SDK generation error: {e}. Attempting REST fallback.")
+                    if response and hasattr(response, "text") and response.text:
+                        return response.text.strip()
+                except Exception as e:
+                    logger.warning(f"google-genai attempt {attempt + 1} failed: {e}")
+                    if attempt == 0:
+                        await asyncio.sleep(1.0)
 
-        # 2. Resilient REST API fallback
+        # 2. Resilient REST API fallback with retry
         return await self._generate_via_rest(prompt, system_instruction)
 
     async def _generate_via_rest(self, prompt: str, system_instruction: str = "") -> str:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
         payload = {
-            "contents": [
-                {
-                    "parts": [{"text": prompt}]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.2,
-                "maxOutputTokens": 1024
-            }
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024}
         }
         
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        if parts:
-                            return parts[0].get("text", "").strip()
-                logger.error(f"Gemini REST error {resp.status_code}: {resp.text}")
-                return self._extract_grounded_fallback(prompt)
-        except Exception as e:
-            logger.error(f"Gemini REST connection failure: {e}")
-            return self._extract_grounded_fallback(prompt)
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts:
+                                return parts[0].get("text", "").strip()
+                    logger.warning(f"Gemini REST attempt {attempt + 1} error {resp.status_code}: {resp.text[:200]}")
+            except Exception as e:
+                logger.warning(f"Gemini REST attempt {attempt + 1} connection error: {e}")
+            if attempt == 0:
+                await asyncio.sleep(1.0)
+
+        return self._extract_grounded_fallback(prompt)
 
     def _extract_grounded_fallback(self, prompt: str) -> str:
         """When LLM API is unavailable, synthesize from retrieved context strictly."""
@@ -86,8 +84,7 @@ class GeminiProvider(LLMProvider):
             parts = prompt.split("RETRIEVED VERIFIED EASA COLLEGE CONTEXT:")
             if len(parts) > 1:
                 context_chunk = parts[1].split("USER QUESTION:")[0].strip()
-                # Return the clean facts directly without hallucination
-                clean_lines = [l.strip() for l in context_chunk.split("\n") if l.strip() and not l.startswith("-") and not l.startswith("Source:")]
+                clean_lines = [l.strip() for l in context_chunk.split("\n") if l.strip() and not l.startswith("-") and not l.startswith("Source:") and not l.startswith("Document:")]
                 if clean_lines:
                     return clean_lines[0]
-        return "I couldn't find verified information about this in the EASA College knowledge base. Please contact the admission office at +91 97888 88888."
+        return f"I couldn't find verified information about this in the EASA College knowledge base. Please contact the admission office at {settings.EASA_ADMISSION_HOTLINE}."
