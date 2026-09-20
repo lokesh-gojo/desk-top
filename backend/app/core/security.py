@@ -1,5 +1,7 @@
 import re
-from typing import Tuple, List
+from typing import Tuple, Optional
+from fastapi import Header, HTTPException, status
+from backend.app.core.config import settings
 
 # Core regex patterns for early prompt-injection rejection
 INJECTION_PATTERNS = [
@@ -23,6 +25,7 @@ LEAKAGE_PATTERNS = [
     r"grounded\s*response\s*:",
     r"supabase_key",
     r"gemini_api_key",
+    r"admin_api_key",
     r"password\s*="
 ]
 
@@ -30,9 +33,7 @@ def sanitize_input(text: str) -> str:
     """Sanitize and normalize user input characters."""
     if not text:
         return ""
-    # Strip non-printable or suspicious control characters
     cleaned = "".join(ch for ch in text if ch.isprintable() or ch in "\n\t")
-    # Collapse multiple repeated newlines or markdown fence injection delimiters
     cleaned = re.sub(r"(\r\n|\r|\n){3,}", "\n\n", cleaned)
     cleaned = re.sub(r"(`{3,}|-{3,})", " ", cleaned)
     return cleaned.strip()[:1000]
@@ -50,7 +51,6 @@ def check_security_guardrails(query: str) -> Tuple[bool, str]:
         
     lower = query.lower()
 
-    # Structural / Delimiter injection attempts
     if lower.count("system:") > 1 or lower.count("assistant:") > 1:
         return True, "Invalid query format. Please ask standard college-related questions."
 
@@ -83,3 +83,28 @@ def validate_model_output(output_text: str, fallback_message: str) -> str:
             return fallback_message
             
     return output_text.strip()
+
+def verify_admin_access(
+    x_admin_api_key: Optional[str] = Header(None, alias="X-Admin-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization")
+):
+    """
+    FastAPI dependency enforcing RBAC / Admin authentication for administrative endpoints.
+    Accepts:
+    1. Header 'X-Admin-API-Key: <ADMIN_API_KEY>'
+    2. Header 'Authorization: Bearer <ADMIN_API_KEY>'
+    """
+    expected_key = settings.ADMIN_API_KEY
+    provided_key = None
+
+    if x_admin_api_key:
+        provided_key = x_admin_api_key.strip()
+    elif authorization and authorization.lower().startswith("bearer "):
+        provided_key = authorization[7:].strip()
+
+    if not provided_key or provided_key != expected_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Valid X-Admin-API-Key or Bearer token required for administrative operations."
+        )
+    return True

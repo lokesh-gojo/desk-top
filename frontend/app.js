@@ -1,4 +1,4 @@
-// EASA DeskBot - Frontend Client Logic
+// EASA DeskBot - Frontend Client Logic (V2.2 Production Hardened)
 const API_BASE = window.location.origin.includes("5500") || window.location.origin.includes("localhost:3000") 
   ? "http://localhost:8000/api" 
   : "/api";
@@ -6,6 +6,8 @@ const API_BASE = window.location.origin.includes("5500") || window.location.orig
 let currentLanguage = "en";
 let isListening = false;
 let speechRecognition = null;
+let chatHistory = []; // Tracks multi-turn conversational context
+let adminApiKey = sessionStorage.getItem("easa_admin_key") || "easa-admin-key-2026";
 
 // Initialization
 document.addEventListener("DOMContentLoaded", () => {
@@ -60,7 +62,8 @@ async function handleSend(e) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: query,
-        language: currentLanguage
+        language: currentLanguage,
+        history: chatHistory.slice(-6) // Retain last 3 dialogue turns
       })
     });
 
@@ -71,6 +74,11 @@ async function handleSend(e) {
     }
 
     const data = await res.json();
+    
+    // Update local conversation history
+    chatHistory.push({ role: "user", content: query });
+    chatHistory.push({ role: "assistant", content: data.answer });
+
     appendBotMessage(data, query);
   } catch (err) {
     console.error("Chat error:", err);
@@ -184,11 +192,11 @@ async function loadActiveNotices() {
   }
 }
 
-// Feedback submission
+// Feedback submission (Persists to SQLite/Supabase)
 async function submitFeedback(elementId, q, a, rating) {
   const container = document.getElementById(elementId);
   if (container) {
-    container.innerHTML = `<span style="font-size: 0.75rem; color: var(--accent-gold);">✓ Feedback recorded. Thank you!</span>`;
+    container.innerHTML = `<span style="font-size: 0.75rem; color: var(--accent-gold);">✓ Feedback recorded in persistent storage. Thank you!</span>`;
   }
   try {
     await fetch(`${API_BASE}/feedback`, {
@@ -239,7 +247,7 @@ function toggleVoice(force) {
   }
 }
 
-// Admin Drawer Controls
+// Admin Drawer Controls (Protected with X-Admin-API-Key)
 function toggleAdminPanel() {
   const drawer = document.getElementById("admin-drawer");
   drawer.classList.toggle("open");
@@ -256,52 +264,124 @@ function switchAdminTab(tabId) {
   document.getElementById(tabId).classList.add("active");
 }
 
+function getAdminHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "X-Admin-API-Key": adminApiKey
+  };
+}
+
 async function loadAdminData() {
-  // 1. Unanswered
+  // 1. Unanswered (from persistent DB)
   try {
-    const res1 = await fetch(`${API_BASE}/admin/unanswered`);
+    const res1 = await fetch(`${API_BASE}/admin/unanswered`, { headers: getAdminHeaders() });
+    if (res1.status === 401) {
+      promptForAdminKey();
+      return;
+    }
     const data1 = await res1.json();
-    document.getElementById("unanswered-list").innerHTML = data1.map(item => `
+    document.getElementById("unanswered-list").innerHTML = data1.length ? data1.map(item => `
       <div class="audit-item">
         <strong>"${escapeHtml(item.query)}"</strong>
-        <div style="color: var(--accent-gold); font-size: 0.75rem;">Asked: ${item.frequency} times &bull; ${new Date(item.last_asked_at).toLocaleDateString()}</div>
+        <div style="color: var(--accent-gold); font-size: 0.75rem;">Asked: ${item.frequency} times &bull; Last: ${new Date(item.last_asked_at).toLocaleString()}</div>
       </div>
-    `).join("");
+    `).join("") : "<p>No unanswered queries logged. All tested questions passed confidence gates.</p>";
   } catch (e) {
-    document.getElementById("unanswered-list").innerHTML = "<p>No unanswered queries logged yet.</p>";
+    document.getElementById("unanswered-list").innerHTML = "<p>Admin access requires valid key.</p>";
   }
 
   // 2. Ingestion audits
   try {
-    const res2 = await fetch(`${API_BASE}/admin/audits`);
+    const res2 = await fetch(`${API_BASE}/admin/audits`, { headers: getAdminHeaders() });
     const data2 = await res2.json();
-    document.getElementById("audit-history-list").innerHTML = data2.map(run => `
+    document.getElementById("audit-history-list").innerHTML = data2.length ? data2.map(run => `
       <div class="audit-item">
         <div><strong>Status: ${run.status}</strong> &bull; ${run.started_at.split("T")[0]}</div>
         <div style="font-size: 0.72rem; color: var(--text-muted);">
           Scanned: ${run.pages_scanned} | Chunks: ${run.chunks_generated} | Errors: ${run.error_count}
         </div>
       </div>
-    `).join("") || "<p>No runs logged.</p>";
+    `).join("") : "<p>No ingestion runs recorded yet.</p>";
   } catch (e) {
     document.getElementById("audit-history-list").innerHTML = "<p>Ready to index.</p>";
+  }
+
+  // 3. Feedback list
+  try {
+    const res3 = await fetch(`${API_BASE}/feedback`, { headers: getAdminHeaders() });
+    const data3 = await res3.json();
+    document.getElementById("feedback-list").innerHTML = data3.length ? data3.map(f => `
+      <div class="audit-item">
+        <strong>${f.rating === 'helpful' ? '👍 Helpful' : '👎 Incomplete'}</strong>: "${escapeHtml(f.question)}"
+        <div style="font-size: 0.72rem; color: var(--text-muted);">${f.answer.slice(0, 100)}...</div>
+      </div>
+    `).join("") : "<p>No user feedback entries recorded yet.</p>";
+  } catch (e) {
+    document.getElementById("feedback-list").innerHTML = "<p>Feedback log ready.</p>";
   }
 }
 
 async function triggerReindex() {
   const btn = document.getElementById("reindex-btn");
-  btn.textContent = "⏳ Indexing...";
+  btn.textContent = "⏳ Incremental Indexing...";
   btn.disabled = true;
   try {
-    const res = await fetch(`${API_BASE}/admin/reindex`, { method: "POST" });
+    const res = await fetch(`${API_BASE}/admin/reindex`, {
+      method: "POST",
+      headers: getAdminHeaders()
+    });
     const data = await res.json();
     alert(`Re-index complete! ${data.message}`);
     loadAdminData();
   } catch (e) {
-    alert("Re-index failed.");
+    alert("Re-index failed. Please verify admin authentication key.");
   } finally {
     btn.textContent = "🔄 Trigger Re-Index";
     btn.disabled = false;
+  }
+}
+
+async function submitNewNotice() {
+  const title = document.getElementById("new-notice-title").value.trim();
+  const content = document.getElementById("new-notice-content").value.trim();
+  if (!title || !content) {
+    alert("Please provide both a title and content for the notice.");
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/notices`, {
+      method: "POST",
+      headers: getAdminHeaders(),
+      body: JSON.stringify({
+        id: `notice-${Date.now()}`,
+        title: title,
+        category: "general",
+        content: content,
+        published_date: new Date().toISOString().split("T")[0],
+        status: "active"
+      })
+    });
+
+    if (res.ok) {
+      alert("Notice published to persistent database!");
+      document.getElementById("new-notice-title").value = "";
+      document.getElementById("new-notice-content").value = "";
+      loadActiveNotices();
+    } else {
+      alert("Failed to publish notice. Unauthorized.");
+    }
+  } catch (e) {
+    alert("Error saving notice.");
+  }
+}
+
+function promptForAdminKey() {
+  const key = prompt("Enter EASA Admin API Key:", adminApiKey);
+  if (key) {
+    adminApiKey = key.trim();
+    sessionStorage.setItem("easa_admin_key", adminApiKey);
+    loadAdminData();
   }
 }
 

@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from backend.app.core.logging import logger
 from backend.app.core.security import sanitize_input, check_security_guardrails, validate_model_output
 from backend.app.core.config import settings
@@ -7,16 +7,19 @@ from backend.app.rag.bm25_search import BM25SearchEngine
 from backend.app.rag.fusion import reciprocal_rank_fusion
 from backend.app.rag.reranker import CrossFeatureReranker
 from backend.app.rag.confidence import EvidenceConfidenceGate
+from backend.app.rag.rewriter import rewrite_conversational_query
 from backend.app.prompts.system_prompt import build_rag_prompt, get_fallback_message
 from backend.app.llm.gemini import GeminiProvider
 from backend.app.llm.openai import OpenAIProvider
 from backend.app.llm.ollama import OllamaProvider
-from backend.app.models.schema import ChatResponse, SourceCitation, EvidenceConfidence
+from backend.app.models.schema import ChatResponse, SourceCitation, EvidenceConfidence, Message
+from backend.app.db.storage import storage
 
 class RAGPipeline:
     """
     Complete Strict Source-Grounded RAG pipeline for EASA College Helpdesk.
-    Reconciled V2.1 architecture with multi-signal confidence gate and output validation.
+    Reconciled V2.2 architecture with conversational query rewriting,
+    multi-signal confidence gate, output validation, and persistent gap logging.
     """
     def __init__(self, vector_engine: VectorSearchEngine = None, bm25_engine: BM25SearchEngine = None):
         self.vector_engine = vector_engine or VectorSearchEngine()
@@ -32,7 +35,7 @@ class RAGPipeline:
         else:
             self.llm = GeminiProvider()
 
-    async def answer_query(self, query: str, language: str = "en") -> ChatResponse:
+    async def answer_query(self, query: str, language: str = "en", history: Optional[List[Message]] = None) -> ChatResponse:
         clean_q = sanitize_input(query)
         fallback_text = get_fallback_message(language=language)
 
@@ -47,22 +50,29 @@ class RAGPipeline:
                 disclaimer="Personal student records and internal credentials are protected and excluded."
             )
 
-        # 2. Hybrid Retrieval: Vector Search + BM25
-        vector_results = self.vector_engine.search(clean_q, top_k=settings.MAX_RETRIEVAL_RESULTS)
-        bm25_results = self.bm25_engine.search(clean_q, top_k=settings.MAX_RETRIEVAL_RESULTS)
+        # 2. Conversational Query Rewriting (multi-turn context resolution)
+        retrieval_query = rewrite_conversational_query(clean_q, history or [])
 
-        # 3. Reciprocal Rank Fusion with stable chunk_id deduplication
+        # 3. Hybrid Retrieval: Vector Search + BM25 using rewritten query
+        vector_results = self.vector_engine.search(retrieval_query, top_k=settings.MAX_RETRIEVAL_RESULTS)
+        bm25_results = self.bm25_engine.search(retrieval_query, top_k=settings.MAX_RETRIEVAL_RESULTS)
+
+        # 4. Reciprocal Rank Fusion with stable chunk_id deduplication
         fused = reciprocal_rank_fusion(vector_results, bm25_results, top_k=settings.MAX_RETRIEVAL_RESULTS)
 
-        # 4. Multi-Feature Reranking (Authority, status, query coverage)
-        reranked = self.reranker.rerank(clean_q, fused, top_k=4)
+        # 5. Multi-Feature Reranking (Authority, status, query coverage)
+        reranked = self.reranker.rerank(retrieval_query, fused, top_k=4)
 
-        # 5. Multi-Signal Evidence Confidence Gate
-        is_confident, conf_summary = self.confidence_gate.evaluate(clean_q, reranked)
+        # 6. Multi-Signal Evidence Confidence Gate
+        is_confident, conf_summary = self.confidence_gate.evaluate(retrieval_query, reranked)
 
-        # If evidence is insufficient, trigger controlled fallback directly without invoking LLM
+        # If evidence is insufficient, trigger controlled fallback directly without LLM
         if not is_confident or not reranked:
             logger.info(f"Query rejected by confidence gate: '{clean_q}' -> Controlled Fallback triggered.")
+            # Automatically persist to unanswered questions table for administrative review
+            category = reranked[0].get("metadata", {}).get("category", "general") if reranked else "general"
+            storage.log_unanswered_query(clean_q, category=category)
+
             return ChatResponse(
                 answer=fallback_text,
                 grounded=False,
@@ -77,7 +87,7 @@ class RAGPipeline:
                 disclaimer="Strict grounding in effect: No matching verified records found in knowledge base."
             )
 
-        # 6. Assemble Context & Citations
+        # 7. Assemble Context & Citations
         context_blocks = []
         sources = []
         seen_urls = set()
@@ -106,11 +116,11 @@ class RAGPipeline:
 
         full_context = "\n\n".join(context_blocks)
 
-        # 7. LLM Grounded Generation
+        # 8. LLM Grounded Generation
         prompt = build_rag_prompt(clean_q, full_context, language=language)
         raw_answer = await self.llm.generate(prompt)
 
-        # 8. Output Validation Guardrail
+        # 9. Output Validation Guardrail
         final_answer = validate_model_output(raw_answer, fallback_text)
 
         # Suggested follow-up questions

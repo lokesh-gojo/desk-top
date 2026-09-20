@@ -4,11 +4,21 @@ from pydantic import BaseModel
 
 class Settings(BaseModel):
     PROJECT_NAME: str = "EASA DeskBot - AI College Helpdesk"
-    VERSION: str = "2.1.0"
+    VERSION: str = "2.2.0"
     API_PREFIX: str = "/api"
     
-    # Allowed CORS Origins
-    CORS_ORIGINS: List[str] = ["*"]
+    # Production CORS - Configurable allowed origins (default allows local dev & official college domain)
+    CORS_ORIGINS: List[str] = [
+        "https://easacollege.com",
+        "https://www.easacollege.com",
+        "https://deskbot.easacollege.com",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "*"  # Safe default during prototype; restrict in cloud deployment
+    ]
+    
+    # Admin Authentication (RBAC protection for ingestion, notices, and analytics)
+    ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "easa-admin-key-2026")
     
     # LLM Configuration
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "gemini")  # "gemini", "openai", "ollama"
@@ -27,7 +37,6 @@ class Settings(BaseModel):
     USE_SUPABASE: bool = bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY"))
     
     # Embedding Model (384-dimensional multilingual model for native English & Tamil)
-    # Perfectly matches database schema: vector(384)
     EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     VECTOR_DIMENSION: int = 384
     

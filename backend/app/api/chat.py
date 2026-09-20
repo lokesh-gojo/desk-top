@@ -4,7 +4,6 @@ from backend.app.core.logging import logger
 
 router = APIRouter()
 
-# Global pipeline instance (injected from main app state)
 _pipeline = None
 
 def set_pipeline(pipeline):
@@ -20,10 +19,15 @@ def get_pipeline():
 async def chat_endpoint(request: ChatRequest, pipeline=Depends(get_pipeline)):
     """
     Main endpoint for student and visitor inquiries.
-    Runs through security guardrails, hybrid retrieval, confidence gate, and LLM grounded generation.
+    Supports multi-turn context (conversational query rewriting),
+    multi-signal confidence gate, and output validation.
     """
     try:
-        response = await pipeline.answer_query(request.message, language=request.language)
+        response = await pipeline.answer_query(
+            request.message,
+            language=request.language,
+            history=request.history
+        )
         return response
     except Exception as e:
         logger.error(f"Chat endpoint error: {e}", exc_info=True)

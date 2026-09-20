@@ -3,23 +3,23 @@ import os
 import uuid
 import hashlib
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 from backend.app.core.logging import logger
 from backend.app.core.config import settings
 from backend.app.ingestion.chunker import chunk_text
 from backend.app.ingestion.crawler import EASACrawler
+from backend.app.db.storage import storage
 
 class DocumentIndexer:
     """
-    Ingestion, versioning, and indexing orchestrator:
-    - Traceable: source URL + retrieval timestamp + content hash + version
+    Ingestion, sequential versioning, and indexing orchestrator:
+    - True Sequential Versioning: v1 -> v2 -> v3 -> v4 tracked per canonical document
     - Incremental: Compares SHA-256 hash against existing versions; skips unchanged docs
     - Decoupled: Application startup quickly loads persisted index; re-indexing is an explicit job
     """
     def __init__(self, vector_store=None):
         self.vector_store = vector_store
         self.audit_log_path = os.path.join(settings.STORAGE_DIR, "ingestion_runs.json")
-        self.hash_registry_path = settings.HASH_REGISTRY_FILE
         self.cache_file_path = settings.CHUNKS_CACHE_FILE
         os.makedirs(settings.STORAGE_DIR, exist_ok=True)
 
@@ -43,22 +43,6 @@ class DocumentIndexer:
         except Exception as e:
             logger.warning(f"Failed to cache chunks: {e}")
 
-    def get_document_hashes(self) -> Dict[str, str]:
-        if os.path.exists(self.hash_registry_path):
-            try:
-                with open(self.hash_registry_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                return {}
-        return {}
-
-    def save_document_hashes(self, hashes: Dict[str, str]):
-        try:
-            with open(self.hash_registry_path, "w", encoding="utf-8") as f:
-                json.dump(hashes, f, indent=2)
-        except Exception as e:
-            logger.warning(f"Failed to save document hashes: {e}")
-
     def load_seed_knowledge(self) -> List[Dict[str, Any]]:
         """Load verified bootstrap documents from seed JSON file."""
         if not os.path.exists(settings.SEED_FILE):
@@ -71,7 +55,7 @@ class DocumentIndexer:
     async def run_full_ingestion(self, crawl_live: bool = False) -> Dict[str, Any]:
         """
         Execute full traceable ingestion job:
-        Documents -> SHA-256 Hash check -> Versioning -> Semantic Chunking -> Storage.
+        Documents -> SHA-256 Hash check -> True Sequential Versioning (v1->v2->v3) -> Semantic Chunking -> Storage.
         """
         run_id = str(uuid.uuid4())
         started_at = datetime.now().isoformat()
@@ -81,9 +65,6 @@ class DocumentIndexer:
         updated_docs = 0
         unchanged_docs = 0
         error_count = 0
-        
-        existing_hashes = self.get_document_hashes()
-        updated_hashes = dict(existing_hashes)
 
         # 1. Collect candidate documents
         raw_documents: List[Dict[str, Any]] = self.load_seed_knowledge()
@@ -96,7 +77,7 @@ class DocumentIndexer:
             error_count += len(crawl_res["errors"])
             raw_documents.extend(crawl_res["documents"])
 
-        # 2. Incremental hash comparison
+        # 2. Sequential versioning & hash comparison
         documents_to_process = []
         for doc in raw_documents:
             canonical_url = doc.get("canonical_url", "")
@@ -104,25 +85,36 @@ class DocumentIndexer:
             current_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
             doc["content_hash"] = current_hash
 
-            if canonical_url not in existing_hashes:
+            existing_record = storage.get_version_record(canonical_url)
+
+            if not existing_record:
+                # New canonical document: version 1
                 new_docs += 1
-                doc["version"] = 1
+                version = 1
+                doc_id = doc.get("id", str(uuid.uuid4()))
+                doc["version"] = version
+                doc["id"] = doc_id
+                storage.upsert_version_record(canonical_url, doc_id, version, current_hash)
                 documents_to_process.append(doc)
-                updated_hashes[canonical_url] = current_hash
-            elif existing_hashes[canonical_url] != current_hash:
+            elif existing_record["content_hash"] != current_hash:
+                # Content changed: sequential increment (e.g. v1 -> v2 -> v3)
                 updated_docs += 1
-                doc["version"] = 2  # Incremented version
+                version = existing_record["current_version"] + 1
+                doc_id = existing_record["document_id"]
+                doc["version"] = version
+                doc["id"] = doc_id
+                storage.upsert_version_record(canonical_url, doc_id, version, current_hash)
                 documents_to_process.append(doc)
-                updated_hashes[canonical_url] = current_hash
             else:
                 unchanged_docs += 1
-                # If force-reindexing, we still process to rebuild cache
+                doc["version"] = existing_record["current_version"]
+                doc["id"] = existing_record["document_id"]
                 documents_to_process.append(doc)
 
         # 3. Generate structured semantic chunks with stable chunk IDs
         all_chunks = []
         for doc in documents_to_process:
-            doc_id = doc.get("id", str(uuid.uuid4()))
+            doc_id = doc.get("id")
             version = doc.get("version", 1)
             metadata = {
                 "document_id": doc_id,
@@ -143,7 +135,6 @@ class DocumentIndexer:
             
             chunks = chunk_text(doc.get("content", ""), metadata)
             for c in chunks:
-                # Inject unique stable chunk_id
                 c["metadata"]["chunk_id"] = f"{doc_id}_v{version}_c{c['chunk_index']}"
             all_chunks.extend(chunks)
 
@@ -151,7 +142,6 @@ class DocumentIndexer:
         if self.vector_store:
             self.vector_store.add_chunks(all_chunks)
         self.save_cached_chunks(all_chunks)
-        self.save_document_hashes(updated_hashes)
 
         completed_at = datetime.now().isoformat()
         audit_record = {
@@ -166,7 +156,7 @@ class DocumentIndexer:
             "chunks_generated": len(all_chunks),
             "embeddings_generated": len(all_chunks),
             "error_count": error_count,
-            "summary_notes": f"Traceable ingestion completed: {new_docs} new, {updated_docs} updated, {len(all_chunks)} chunks indexed."
+            "summary_notes": f"Traceable sequential versioning run: {new_docs} new, {updated_docs} updated, {len(all_chunks)} chunks indexed."
         }
 
         self._record_audit(audit_record)

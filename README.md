@@ -1,4 +1,4 @@
-# 🎓 EASA DeskBot – AI College Helpdesk (V2.1 Production Architecture)
+# 🎓 EASA DeskBot – AI College Helpdesk (V2.2 Production Architecture)
 
 > **Official AI Information Assistant & Digital Reception Desk**  
 > **EASA College of Engineering and Technology (Autonomous)**  
@@ -10,17 +10,18 @@
 
 ## 🏛️ System Overview
 
-**EASA DeskBot** is a college-specific, **Strict Source-Grounded RAG Helpdesk** engineered to serve prospective students, parents, current scholars, and visitors with verified institutional knowledge.
+**EASA DeskBot** is an enterprise-grade, **Strict Source-Grounded RAG Helpdesk** engineered to serve prospective students, parents, current scholars, and visitors with verified institutional knowledge.
 
 ### Core Design Principles:
 * **No Retrieved Evidence → No Factual Answer → Controlled Fallback**  
-  The system strictly refuses to invent or hallucinate admission fees, cutoffs, bus routes, or internal phone numbers.
-* **Temporal Awareness**: Distinguishes between active 2026–27 admission notices and historical/archived institutional records.
-* **Evidence & Confidence Gate**: Multi-signal confidence check (`vector similarity + BM25 keyword relevance + reranker score + source authority + date validity`) before triggering LLM generation.
-* **True Multilingual Embeddings**: Powered by `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions) supporting **English** and **Tamil (தமிழ்)**, perfectly synchronized with Supabase `vector(384)`.
+  The system strictly enforces **abstention on unsupported facts**, refusing to invent admission fees, cutoffs, bus routes, or internal phone numbers.
+* **Conversational Multi-Turn Context**: An integrated Contextual Query Rewriter resolves conversational pronouns and follow-up questions (*"What about ECE?"*, *"Does it have a boys hostel?"*) into self-contained search queries before retrieval.
+* **ACID Persistent Operations**: Notices, user feedback, and unanswered queries are permanently persisted via SQLite/Supabase, guaranteeing zero data loss across container restarts.
+* **Admin RBAC Authentication**: All administrative and notice-publishing endpoints are secured with `X-Admin-API-Key` / Bearer token authentication.
+* **True Sequential Document Versioning**: Maintains incremental version history (`v1 → v2 → v3`) per canonical URL via SHA-256 content hashing.
+* **Native Multilingual Embeddings**: Powered by `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions) supporting **English**, **Tamil (தமிழ்)**, and **Tanglish**, perfectly synchronized with Supabase `vector(384)`.
 * **Stable Chunk Identifiers**: RRF fusion utilizes deterministic `chunk_id` (`document_id + version + chunk_index`) to eliminate chunk collisions.
-* **Decoupled Startup & Persistent Cache**: Server boots instantaneously from persistent vector cache; re-indexing runs incrementally using SHA-256 content hashes.
-* **Single-Container Cloud Delivery**: FastAPI backend directly serves the high-performance Digital Reception Desk UI, eliminating multi-container orchestration overhead in production.
+* **Single-Container Cloud Delivery**: FastAPI backend directly serves the high-performance Digital Reception Desk UI with sub-second cold starts from persistent vector caches.
 
 ---
 
@@ -38,18 +39,22 @@
                              [ EASACrawler & Ingester ]
                                        ↓
                         [ HTML Cleaner & Metadata Parser ]
-                   (Status: Current vs. Archived | Priority 10 vs 2)
+                      (SHA-256 Incremental Versioning: v1→v2→v3)
                                        ↓
                            [ Logical Semantic Chunker ]
                                        ↓
                  [ Multilingual Embeddings (384-dim EN/TA) ]
                                        ↓
                      ┌─────────────────┴─────────────────┐
-                     │        HYBRID STORAGE LAYER       │
-                     │  Supabase pgvector / Local Index  │
+                     │     PERSISTENT STORAGE LAYER      │
+                     │  Supabase pgvector / SQLite Cache │
+                     │  (Notices, Feedback, Unanswered)  │
                      └─────────────────┬─────────────────┘
                                        │
-     User Query ───→ [ Multi-Layer Security Guardrails ]
+     User Query ───→ [ Security Guardrails & Delimiter Filter ]
+                                       │
+                    [ Conversational Query Rewriter ]
+                    (Resolves multi-turn chat history)
                                        │
                  ┌─────────────────────┴─────────────────────┐
                  ↓                                           ↓
@@ -72,8 +77,8 @@
                     ↓                                     ↓
          [ Controlled Fallback ]                 [ Pluggable LLM Layer ]
      (Dynamic contacts from DB:                 (Google GenAI Gemini 2.5 /
-      hotline +91 97888 88888)                   OpenAI / Ollama)
-                                                          │
+      hotline +91 97888 88888;                   OpenAI / Ollama)
+      logged to unanswered DB)                            │
                                                           ↓
                                                 [ Output Validator ]
                                               (Zero prompt/data leak)
@@ -94,14 +99,16 @@ desk-bot-project/
 │   ├── app/
 │   │   ├── main.py                  # FastAPI entry point & fast-boot loader
 │   │   ├── api/
-│   │   │   ├── chat.py              # POST /api/chat
-│   │   │   ├── notices.py           # GET, POST /api/notices
-│   │   │   ├── feedback.py          # POST, GET /api/feedback
-│   │   │   └── admin.py             # GET /api/admin/unanswered, audits, reindex
+│   │   │   ├── chat.py              # POST /api/chat (Multi-turn conversational RAG)
+│   │   │   ├── notices.py           # GET, POST /api/notices (Persistent & RBAC protected)
+│   │   │   ├── feedback.py          # POST, GET /api/feedback (Persistent & RBAC protected)
+│   │   │   └── admin.py             # GET /api/admin/unanswered, audits, reindex (RBAC protected)
 │   │   ├── core/
-│   │   │   ├── config.py            # Environment & 384-dim multilingual settings
+│   │   │   ├── config.py            # Environment, CORS & Admin API key settings
 │   │   │   ├── logging.py           # Structured logger
-│   │   │   └── security.py          # Multi-layer injection & output validators
+│   │   │   └── security.py          # Multi-layer injection, output & RBAC validators
+│   │   ├── db/
+│   │   │   └── storage.py           # Unified persistent database adapter (SQLite + Supabase)
 │   │   ├── rag/
 │   │   │   ├── embeddings.py        # 384-dim multilingual vectorizer (EN & TA)
 │   │   │   ├── vector_search.py     # Supabase pgvector & local vector search
@@ -109,6 +116,7 @@ desk-bot-project/
 │   │   │   ├── fusion.py            # Chunk-ID based Reciprocal Rank Fusion
 │   │   │   ├── reranker.py          # Cross-feature authority & recency reranker
 │   │   │   ├── confidence.py        # Multi-signal evidence confidence gate
+│   │   │   ├── rewriter.py          # Contextual conversational query rewriter
 │   │   │   └── pipeline.py          # Strict Grounded RAG orchestrator
 │   │   ├── llm/
 │   │   │   ├── base.py              # Abstract LLMProvider interface
@@ -120,7 +128,7 @@ desk-bot-project/
 │   │   │   ├── parser.py            # Temporal extractor & SHA-256 versioning
 │   │   │   ├── cleaner.py           # HTML sanitizer & boilerplate stripper
 │   │   │   ├── chunker.py           # Structured semantic chunker
-│   │   │   └── indexer.py           # Traceable incremental indexer & caching
+│   │   │   └── indexer.py           # True sequential versioning (v1→v2→v3)
 │   │   ├── models/
 │   │   │   └── schema.py            # Request / Response schemas
 │   │   └── prompts/
@@ -128,19 +136,19 @@ desk-bot-project/
 │   ├── data/
 │   │   ├── seed/
 │   │   │   └── easa_seed_knowledge.json # 10 verified EASA institutional datasets
-│   │   ├── storage/                 # Persistent index cache & audit logs
+│   │   ├── storage/                 # Persistent SQLite database & index cache
 │   │   └── raw/                     # Traceable raw downloaded HTML pages
 │   ├── tests/
 │   │   ├── test_retrieval.py        # Courses, ECE, buses, hostels
 │   │   ├── test_hallucination.py    # Controlled fallback tests
 │   │   ├── test_temporal.py         # 2026-27 vs legacy precedence
 │   │   ├── test_security.py         # Injection & private records refusal
-│   │   └── evaluate_rag.py          # Precision & Abstention benchmark evaluation
+│   │   └── evaluate_rag.py          # Factual accuracy & multilingual benchmark
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── frontend/
 │   ├── index.html                   # Digital College Reception Desk UI
-│   ├── app.js                       # Client logic, voice input, admin hub
+│   ├── app.js                       # Client logic, voice input, admin auth
 │   ├── style.css                    # Academic navy & amber glassmorphic theme
 │   └── package.json
 ├── database/
@@ -169,7 +177,7 @@ pip install -r backend/requirements.txt
 # Run the unit test suite
 python run_tests.py
 
-# Run the benchmark evaluation suite
+# Run the multilingual benchmark evaluation suite (Factual accuracy & abstention)
 python backend/tests/evaluate_rag.py
 
 # Start backend server (serves frontend automatically)
@@ -179,11 +187,24 @@ Open **`http://localhost:8000`** in your browser to experience the Digital Recep
 
 ---
 
+## 🔐 Administrative Operations & Security
+
+All administrative routes are protected by **RBAC**:
+* **Admin Key**: Set via `ADMIN_API_KEY` in `.env` (default: `easa-admin-key-2026`).
+* **Headers**: Provide `X-Admin-API-Key: <YOUR_KEY>` or `Authorization: Bearer <YOUR_KEY>`.
+* **Endpoints Protected**:
+  * `POST /api/notices` – Publish persistent live announcements.
+  * `POST /api/admin/reindex` – Trigger incremental SHA-256 re-indexing.
+  * `GET /api/admin/audits` – Inspect crawler and indexing logs.
+  * `GET /api/admin/unanswered` – Review questions flagged for knowledge base enrichment.
+  * `GET /api/feedback` – Review user ratings.
+
+---
+
 ## 🐳 Docker Deployment
 
-The application is packaged as a high-performance single container where FastAPI directly serves the reception desk:
+The application runs as a high-performance single container:
 ```bash
-# Build and run container
 docker-compose up --build
 ```
 Live at `http://localhost:8000`.
@@ -193,7 +214,7 @@ Live at `http://localhost:8000`.
 ## ☁️ Cloud Deployment (Google Cloud Run / Render)
 
 ### Google Cloud Run
-1. Build and push container:
+1. Build and submit container image:
    ```bash
    gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/easa-deskbot:latest .
    ```
@@ -203,4 +224,4 @@ Live at `http://localhost:8000`.
    ```
 
 ### Render
-* Connect `https://github.com/lokesh-gojo/desk-top` to Render. The included `render.yaml` or `backend/Dockerfile` will deploy the service automatically.
+* Connect your GitHub repository to Render. The included `render.yaml` automatically deploys the service with persistent storage and environment variables.
