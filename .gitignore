@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+
+# Environment Variables
+.env
+.env.local
+
+# Data Storage logs (retain seed)
+backend/data/storage/*.json
+backend/data/raw/*.html
+
+# Node / Frontend
+node_modules/
+npm-debug.log
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp

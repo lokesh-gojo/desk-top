@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EASA DeskBot – AI College Helpdesk | EASA College of Engineering & Technology</title>
+  <meta name="description" content="Official AI College Helpdesk for EASA College of Engineering and Technology, Coimbatore. Strict source-grounded answers for admissions, programmes, hostels, buses, and placements." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Top Institutional Banner -->
+    <header class="institution-header">
+      <div class="header-inner">
+        <div class="brand-cluster">
+          <div class="college-emblem">🎓</div>
+          <div class="college-titles">
+            <div class="college-name">EASA COLLEGE OF ENGINEERING & TECHNOLOGY</div>
+            <div class="college-accreditation">
+              <span class="badge-accent">Autonomous Institution (2024)</span>
+              <span class="badge-naac">NAAC "A" Grade</span>
+              <span class="badge-anna">Affiliated to Anna University</span>
+              <span class="badge-tnea">TNEA Code: 2755</span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="header-controls">
+          <div class="lang-switch">
+            <button id="lang-en" class="lang-btn active" onclick="setLanguage('en')">English</button>
+            <button id="lang-ta" class="lang-btn" onclick="setLanguage('ta')">தமிழ்</button>
+          </div>
+          <button id="admin-toggle-btn" class="admin-btn" onclick="toggleAdminPanel()">
+            ⚙️ Admin Hub
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Dynamic Notice Bar -->
+      <div class="notice-ribbon" id="notice-ribbon">
+        <div class="ribbon-tag">📢 ANNOUNCEMENT</div>
+        <div class="ribbon-text" id="ribbon-text">Loading latest 2026-27 institutional announcements...</div>
+      </div>
+    </header>
+
+    <!-- Main Desk Interface -->
+    <main class="reception-main">
+      <div class="chat-viewport">
+        <!-- Receptionist Status Card -->
+        <div class="receptionist-bar">
+          <div class="receptionist-info">
+            <div class="pulse-indicator"></div>
+            <div>
+              <strong>EASA DeskBot</strong> &bull; Official Digital Receptionist
+              <span class="verified-indicator">Strict Source-Grounded &bull; Zero Invention</span>
+            </div>
+          </div>
+          <div class="contact-hotline">
+            📞 Admission Helpdesk: <a href="tel:+919788888888">+91 97888 88888</a>
+          </div>
+        </div>
+
+        <!-- Chat History Window -->
+        <div class="messages-container" id="messages-container">
+          <!-- Initial Welcome Card -->
+          <div class="message-card bot-card initial-greeting">
+            <div class="avatar-ring">🎓</div>
+            <div class="card-body">
+              <h3 id="welcome-title">Vanakkam! Welcome to EASA College Helpdesk 👋</h3>
+              <p id="welcome-desc">
+                I am your official AI Information Assistant, trained on verified institutional records for <strong>EASA College of Engineering and Technology</strong>. How may I assist you today?
+              </p>
+              
+              <div class="quick-chips-grid">
+                <button class="chip" onclick="askQuick('What UG courses are available at EASA?')">📚 UG Courses</button>
+                <button class="chip" onclick="askQuick('What is the eligibility for B.E admission 2026-27?')">📝 2026-27 Admission</button>
+                <button class="chip" onclick="askQuick('What scholarships and tuition fee waivers are offered?')">🏆 Scholarships</button>
+                <button class="chip" onclick="askQuick('Does EASA College have separate hostels for boys and girls?')">🏢 Hostel Facilities</button>
+                <button class="chip" onclick="askQuick('Does EASA bus go to Gandhipuram?')">🚌 Bus Routes</button>
+                <button class="chip" onclick="askQuick('What placement training and recruiters does EASA have?')">💼 Placements</button>
+                <button class="chip" onclick="askQuick('What facilities are available on campus?')">🏛️ Campus Facilities</button>
+                <button class="chip" onclick="askQuick('How can I contact the admission office?')">☎️ Contact Office</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chat Input Bar -->
+        <div class="input-dock">
+          <form id="chat-form" onsubmit="handleSend(event)">
+            <button type="button" id="mic-btn" class="dock-btn mic-btn" title="Voice Input" onclick="toggleVoice()">
+              🎤
+            </button>
+            <input 
+              type="text" 
+              id="user-input" 
+              placeholder="Ask about admissions, courses, hostel, transport, fees..." 
+              autocomplete="off" 
+              required
+            />
+            <button type="submit" id="send-btn" class="dock-btn send-btn">
+              <span>Send</span> ➔
+            </button>
+          </form>
+          <div class="input-footnote">
+            🔒 Answers are strictly verified against official EASA institutional records &bull; Navakkarai, Coimbatore
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Admin Side Panel Drawer -->
+    <aside class="admin-drawer" id="admin-drawer">
+      <div class="drawer-header">
+        <h3>⚙️ EASA DeskBot Administration</h3>
+        <button class="close-btn" onclick="toggleAdminPanel()">&times;</button>
+      </div>
+      
+      <div class="drawer-tabs">
+        <button class="tab-btn active" onclick="switchAdminTab('tab-unanswered')">Unanswered</button>
+        <button class="tab-btn" onclick="switchAdminTab('tab-notices')">Notices</button>
+        <button class="tab-btn" onclick="switchAdminTab('tab-audits')">Ingestion Audit</button>
+        <button class="tab-btn" onclick="switchAdminTab('tab-feedback')">Feedback</button>
+      </div>
+
+      <div class="drawer-content">
+        <!-- Unanswered Questions Tab -->
+        <div id="tab-unanswered" class="admin-tab-pane active">
+          <div class="tab-info-box">
+            Identifies questions where the confidence gate refused to answer to prevent hallucination. Use these to upload missing institutional records.
+          </div>
+          <div id="unanswered-list" class="audit-list">Loading...</div>
+        </div>
+
+        <!-- Dynamic Notices Tab -->
+        <div id="tab-notices" class="admin-tab-pane">
+          <div class="add-notice-box">
+            <h4>Publish Active Notice</h4>
+            <input type="text" id="new-notice-title" placeholder="Notice Title" />
+            <textarea id="new-notice-content" placeholder="Notice details..."></textarea>
+            <button class="action-btn" onclick="submitNewNotice()">Publish Live Notice</button>
+          </div>
+          <div id="admin-notices-list" class="audit-list">Loading...</div>
+        </div>
+
+        <!-- Ingestion & Audit Tab -->
+        <div id="tab-audits" class="admin-tab-pane">
+          <div class="reindex-box">
+            <h4>Knowledge Base Synchronization</h4>
+            <p>Re-index seed database and run whitelist web crawler.</p>
+            <button class="action-btn" id="reindex-btn" onclick="triggerReindex()">🔄 Trigger Re-Index</button>
+          </div>
+          <div id="audit-history-list" class="audit-list">Loading...</div>
+        </div>
+
+        <!-- Feedback Tab -->
+        <div id="tab-feedback" class="admin-tab-pane">
+          <div id="feedback-list" class="audit-list">Loading...</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

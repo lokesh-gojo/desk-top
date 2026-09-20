@@ -1,0 +1,12 @@
+{
+  "name": "easa-deskbot-frontend",
+  "version": "2.0.0",
+  "description": "Digital College Reception Desk UI for EASA College AI Helpdesk",
+  "scripts": {
+    "dev": "serve . -p 3000",
+    "start": "serve . -s -p 3000"
+  },
+  "devDependencies": {
+    "serve": "^14.2.1"
+  }
+}

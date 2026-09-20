@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: easa-deskbot
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    plan: standard
+    region: singapore
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: MIN_EVIDENCE_CONFIDENCE
+        value: "0.45"
