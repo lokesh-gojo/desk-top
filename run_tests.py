@@ -15,7 +15,7 @@ from backend.app.ingestion.chunker import chunk_text
 
 async def main():
     print("==================================================================")
-    print("EASA DeskBot: Verification & Evaluation Test Suite (Production V2)")
+    print("EASA DeskBot: Automated Verification & Unit Test Suite")
     print("==================================================================")
     
     # 1. Initialize engines
@@ -28,6 +28,7 @@ async def main():
     all_chunks = []
     for doc in seed_docs:
         meta = {
+            "document_id": doc.get("id"),
             "title": doc.get("title"),
             "category": doc.get("category"),
             "canonical_url": doc.get("canonical_url"),
@@ -37,6 +38,8 @@ async def main():
             "last_verified": doc.get("last_verified", "2026-09-20")
         }
         chunks = chunk_text(doc.get("content", ""), meta)
+        for c in chunks:
+            c["metadata"]["chunk_id"] = f"{doc.get('id')}_{c['chunk_index']}"
         all_chunks.extend(chunks)
 
     vector_engine.add_chunks(all_chunks)
@@ -90,7 +93,9 @@ async def main():
         print(f"  ✓ {label}: Successfully Blocked & Sanitized")
 
     print("\n==================================================================")
-    print("ALL TESTS PASSED! EASA DeskBot RAG Pipeline is 100% Production Ready.")
+    print("ALL AUTOMATED CHECKS PASSED. This verifies the configured test cases only;")
+    print("production readiness requires benchmark evaluation, security testing,")
+    print("source verification, load testing, and deployment validation.")
     print("==================================================================")
 
 if __name__ == "__main__":

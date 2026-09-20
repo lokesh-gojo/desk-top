@@ -1,6 +1,7 @@
 import re
-from typing import Tuple
+from typing import Tuple, List
 
+# Core regex patterns for early prompt-injection rejection
 INJECTION_PATTERNS = [
     r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions",
     r"system\s+prompt",
@@ -9,27 +10,76 @@ INJECTION_PATTERNS = [
     r"reveal\s+(internal|database|password|secret|key)",
     r"sql\s+injection",
     r"give\s+me\s+private\s+student",
-    r"student\s+(marks|attendance|password|phone\s+number)"
+    r"student\s+(marks|attendance|password|phone\s+number)",
+    r"administrative\s+credentials",
+    r"drop\s+table",
+    r"union\s+select"
+]
+
+# Prohibited leakage patterns in model outputs
+LEAKAGE_PATTERNS = [
+    r"system\s*prompt\s*:",
+    r"retrieved\s*verified\s*easa\s*college\s*context",
+    r"grounded\s*response\s*:",
+    r"supabase_key",
+    r"gemini_api_key",
+    r"password\s*="
 ]
 
 def sanitize_input(text: str) -> str:
-    """Strip dangerous characters and trim whitespace."""
+    """Sanitize and normalize user input characters."""
     if not text:
         return ""
     # Strip non-printable or suspicious control characters
-    cleaned = "".join(ch for ch in text if ch.isprintable())
+    cleaned = "".join(ch for ch in text if ch.isprintable() or ch in "\n\t")
+    # Collapse multiple repeated newlines or markdown fence injection delimiters
+    cleaned = re.sub(r"(\r\n|\r|\n){3,}", "\n\n", cleaned)
+    cleaned = re.sub(r"(`{3,}|-{3,})", " ", cleaned)
     return cleaned.strip()[:1000]
 
 def check_security_guardrails(query: str) -> Tuple[bool, str]:
     """
-    Check if query attempts prompt injection or requests private/restricted records.
+    Multi-layer security validator:
+    - Checks input length & structural anomalies
+    - Pattern-based prompt injection detection
+    - ERP / Private student records refusal
     Returns: (is_blocked, refusal_reason)
     """
+    if not query or len(query.strip()) < 2:
+        return True, "Please enter a valid question regarding EASA College."
+        
     lower = query.lower()
+
+    # Structural / Delimiter injection attempts
+    if lower.count("system:") > 1 or lower.count("assistant:") > 1:
+        return True, "Invalid query format. Please ask standard college-related questions."
+
     for pattern in INJECTION_PATTERNS:
         if re.search(pattern, lower):
-            if "private student" in lower or "marks" in lower or "attendance" in lower:
-                return True, "Personal student records, attendance, and internal marks are not part of the public helpdesk. Please log in to the official EASA student ERP portal or contact the college office directly."
-            return True, "I am EASA DeskBot, the official college assistant. I only provide verified public information regarding EASA College of Engineering and Technology."
+            if any(term in lower for term in ["private student", "marks", "attendance", "credential"]):
+                return True, (
+                    "Personal student records, attendance, internal marks, and administrative credentials "
+                    "are strictly protected and excluded from the public helpdesk. Please access the authenticated "
+                    "EASA College ERP portal or visit the Controller of Examinations."
+                )
+            return True, (
+                "I am EASA DeskBot, the official college assistant. I only provide verified institutional "
+                "information regarding EASA College of Engineering and Technology."
+            )
     
     return False, ""
+
+def validate_model_output(output_text: str, fallback_message: str) -> str:
+    """
+    Output guardrail validator:
+    Ensures LLM response has not leaked internal prompts, database tokens, or instructions.
+    """
+    if not output_text:
+        return fallback_message
+        
+    lower = output_text.lower()
+    for leak in LEAKAGE_PATTERNS:
+        if re.search(leak, lower):
+            return fallback_message
+            
+    return output_text.strip()

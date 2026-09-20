@@ -26,31 +26,21 @@ async def lifespan(app: FastAPI):
     vector_engine = VectorSearchEngine(embedding_service=embedder)
     bm25_engine = BM25SearchEngine()
     
-    # 2. Ingest and index verified seed knowledge
+    # 2. Connect to persistent knowledge base
     indexer = DocumentIndexer(vector_store=vector_engine)
-    logger.info("Indexing verified EASA College seed knowledge...")
-    seed_docs = indexer.load_seed_knowledge()
+    chunks = indexer.load_cached_chunks()
     
-    # Chunk and populate both vector store and BM25 index
-    from backend.app.ingestion.chunker import chunk_text
-    all_chunks = []
-    for doc in seed_docs:
-        meta = {
-            "document_id": doc.get("id"),
-            "title": doc.get("title"),
-            "category": doc.get("category"),
-            "canonical_url": doc.get("canonical_url"),
-            "source_authority": doc.get("source_authority", "official_webpage"),
-            "status": doc.get("status", "current"),
-            "priority": doc.get("priority", 10),
-            "last_verified": doc.get("last_verified", "2026-09-20")
-        }
-        chunks = chunk_text(doc.get("content", ""), meta)
-        all_chunks.extend(chunks)
+    if not chunks:
+        logger.info("No cached index found. Performing initial verified ingestion...")
+        await indexer.run_full_ingestion(crawl_live=False)
+        chunks = indexer.load_cached_chunks()
 
-    vector_engine.add_chunks(all_chunks)
-    bm25_engine.add_chunks(all_chunks)
-    logger.info(f"Successfully loaded {len(all_chunks)} semantic chunks into hybrid search engines.")
+    # Populate in-memory BM25 index and vector cache
+    if chunks:
+        if not vector_engine.chunks:
+            vector_engine.add_chunks(chunks)
+        bm25_engine.add_chunks(chunks)
+        logger.info(f"Ready: {len(chunks)} verified institutional chunks active.")
 
     # 3. Assemble RAG pipeline
     pipeline = RAGPipeline(vector_engine=vector_engine, bm25_engine=bm25_engine)
@@ -87,10 +77,12 @@ async def healthcheck():
         "status": "healthy",
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
+        "embedding_model": settings.EMBEDDING_MODEL_NAME,
+        "vector_dimension": settings.VECTOR_DIMENSION,
         "llm_provider": settings.LLM_PROVIDER
     }
 
-# Mount frontend directory if present
+# Mount static frontend
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "frontend")
 if os.path.exists(frontend_dir):
     app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
